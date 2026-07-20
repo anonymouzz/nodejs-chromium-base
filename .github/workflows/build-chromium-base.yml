@@ -1,0 +1,78 @@
+name: Build and Test Chromium Base
+
+on:
+  push:
+    paths:
+      - 'Dockerfile'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+env:
+  IMAGE_NAME: anonymouz/nodejs-chromium-base
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image locally
+        run: |
+          docker build -t test-chromium-image -f Dockerfile .
+
+      - name: Test PDF Generation
+        run: |
+          docker run --rm test-chromium-image sh -c \
+            'test -x "$CHROMIUM_EXECUTABLE" && \
+             "$CHROMIUM_EXECUTABLE" --headless --no-sandbox --disable-dev-shm-usage --disable-gpu \
+               --print-to-pdf=/tmp/test.pdf https://www.chromium.org/chromium-projects/ && \
+             ls -la /tmp/test.pdf && \
+             [ -s /tmp/test.pdf ] || (echo "PDF test failed" && exit 1)'
+
+      - name: Tag and Push Images
+        run: |
+          IMAGE_TAG="${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ github.run_id }}"
+          IMAGE_LATEST="${{ env.IMAGE_NAME }}:latest"
+
+          docker tag test-chromium-image $IMAGE_TAG
+          docker tag test-chromium-image $IMAGE_LATEST
+
+          docker push $IMAGE_TAG
+          docker push $IMAGE_LATEST
+
+      - name: Clean up old images in Docker Hub
+        if: success()
+        run: |
+          echo "Logging into Docker Hub API..."
+          TOKEN=$(curl -s -H "Content-Type: application/json" -X POST -d '{"username": "'${{ secrets.DOCKERHUB_USERNAME }}'", "password": "'${{ secrets.DOCKERHUB_TOKEN }}'"}' https://hub.docker.com/v2/users/login/ | jq -r .token)
+
+          if [ "$TOKEN" == "null" ] || [ -z "$TOKEN" ]; then
+            echo "Failed to get API token. Check credentials and token permissions."
+            exit 1
+          fi
+
+          echo "Fetching tags..."
+          TAGS=$(curl -s -H "Authorization: JWT ${TOKEN}" "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/?page_size=100&ordering=-last_updated" | jq -r '.results[].name' | grep -v '^latest$')
+
+          TAGS_ARRAY=($TAGS)
+
+          KEEP=3
+
+          if [ ${#TAGS_ARRAY[@]} -gt $KEEP ]; then
+            echo "Found ${#TAGS_ARRAY[@]} tags (excluding latest). Keeping the newest $KEEP."
+
+            for tag in "${TAGS_ARRAY[@]:$KEEP}"; do
+              echo "Deleting old tag: $tag"
+              curl -s -X DELETE -H "Authorization: JWT ${TOKEN}" "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/$tag/"
+            done
+          else
+            echo "Cleanup not needed. Total historical tags: ${#TAGS_ARRAY[@]}"
+          fi

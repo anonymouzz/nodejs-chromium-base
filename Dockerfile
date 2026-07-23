@@ -1,3 +1,4 @@
+# linux/amd64 + linux/arm64 (Apple Silicon). Same apk packages on both arches.
 FROM node:22.13.0-alpine
 
 # System Chromium for Puppeteer (backend-ts PDF).

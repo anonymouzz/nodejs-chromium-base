@@ -3,10 +3,11 @@ name: Build and Test Chromium Base
 on:
   push:
     paths:
-      - 'Dockerfile'
+      - "Dockerfile"
+      - ".github/workflows/build-chromium-base.yml"
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
 
 env:
   IMAGE_NAME: anonymouz/nodejs-chromium-base
@@ -24,29 +25,44 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build Docker image locally
-        run: |
-          docker build -t test-chromium-image -f Dockerfile .
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Test PDF Generation
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build amd64 image for PDF smoke
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: test-chromium-image:amd64
+          cache-from: type=gha,scope=nodejs-chromium-amd64
+          cache-to: type=gha,mode=max,scope=nodejs-chromium-amd64
+
+      - name: Test PDF Generation (amd64)
         run: |
-          docker run --rm test-chromium-image sh -c \
+          docker run --rm --platform linux/amd64 test-chromium-image:amd64 sh -c \
             'test -x "$CHROMIUM_EXECUTABLE" && \
              "$CHROMIUM_EXECUTABLE" --headless --no-sandbox --disable-dev-shm-usage --disable-gpu \
                --print-to-pdf=/tmp/test.pdf https://www.chromium.org/chromium-projects/ && \
              ls -la /tmp/test.pdf && \
              [ -s /tmp/test.pdf ] || (echo "PDF test failed" && exit 1)'
 
-      - name: Tag and Push Images
-        run: |
-          IMAGE_TAG="${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ github.run_id }}"
-          IMAGE_LATEST="${{ env.IMAGE_NAME }}:latest"
-
-          docker tag test-chromium-image $IMAGE_TAG
-          docker tag test-chromium-image $IMAGE_LATEST
-
-          docker push $IMAGE_TAG
-          docker push $IMAGE_LATEST
+      - name: Build and push multi-arch (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}-${{ github.run_id }}
+          cache-from: type=gha,scope=nodejs-chromium-multi
+          cache-to: type=gha,mode=max,scope=nodejs-chromium-multi
 
       - name: Clean up old images in Docker Hub
         if: success()
